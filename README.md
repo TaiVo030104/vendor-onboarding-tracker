@@ -24,10 +24,17 @@ Log in as **linh**, **huy** or **mai** (password `password`).
 Optional:
 
 ```bash
-NOW=2026-08-10T09:00:00Z npm start   # freeze "today" for a demo
 npm run seed                          # reset data/db.json to the seed data
 npm test                              # API tests (in backend/)
+
+# freeze "today" for a demo: re-seed with the same NOW so seed dates line up
+export NOW=2026-08-10T09:00:00Z
+npm run seed && npm start
 ```
+
+Seed dates are relative to "now" at seed time, and `data/db.json` is reused on later
+starts. If you change `NOW`, run `npm run seed` again with the same value; otherwise the
+existing data may be dated after "today".
 
 ## Layout
 

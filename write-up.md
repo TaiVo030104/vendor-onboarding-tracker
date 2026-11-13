@@ -48,7 +48,8 @@ the only trace is a free-text note that will be overwritten next time.
   interface, so it could be replaced by Postgres without touching the routes.
 - **Frontend:** React (Vite) single-page app. It calls the API via a dev proxy.
 - **Clock:** all "now" logic goes through `clock.js`. Setting `NOW=2026-08-10T09:00:00Z`
-  fixes the date for demos and tests.
+  fixes the date for demos and tests (re-seed with the same `NOW`, since seed dates
+  are relative to it).
 - **Tests:** `node --test` API tests cover auth, stuck calculation, history recording,
   skip prevention, required reason for backward moves, KYC rejection, and the 409 conflict.
   I also ran the UI end to end in headless Chrome: login, filters, KYC rejection, forward
@@ -87,7 +88,7 @@ the only trace is a free-text note that will be overwritten next time.
 ```bash
 cd backend && npm install && npm start            # API on :4000
 cd frontend && npm install && npm run dev         # UI on :5173
-# optional: freeze the clock for a demo
-NOW=2026-08-10T09:00:00Z npm start
+# optional: freeze the clock for a demo (re-seed with the same NOW first)
+cd backend && export NOW=2026-08-10T09:00:00Z && npm run seed && npm start
 ```
 Log in as `linh` / `huy` / `mai`, password `password`.
