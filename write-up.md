@@ -1,94 +1,135 @@
-# Vendor Onboarding Tracker — Write-up
+# Vendor Onboarding Tracker - Write-up
 
-## 1. Problems with the current spreadsheet process
+## Problems with the current process
 
-### Problem 1: "Last Updated" is typed by hand, so nobody can trust it
-The only signal for "how long has this vendor been waiting" is a date a coordinator
-must remember to change. It goes wrong in both directions:
+**1. "Last Updated" is filled in by hand.**
+It's the only way to tell how long a vendor has been waiting, and it depends on someone
+remembering to change it. People forget, or they update it when they add a note even though
+nothing actually moved. In the example sheet, Company E has been at KYC Docs Received since
+15 July and nothing flags it. You'd only notice by reading every row and working out the
+dates yourself.
 
-- **Forgotten:** the stage is changed but the date isn't, so the vendor looks newer or older than it is.
-- **Touched for the wrong reason:** a coordinator edits the Notes column (e.g. "chased by
-  phone") and bumps the date, so a vendor that has made no progress looks recently active.
+**2. There's no history.**
+The sheet only shows where a vendor is now. If something looks off, like a vendor marked
+Active that never seems to have passed KYC, there's no way to find out who changed it, when,
+or what it was before. Failed KYC reviews are a good example. Company B was rejected in Slack
+and went back to waiting on documents, and the only record is a note that someone will
+probably overwrite later.
 
-As a result, stuck vendors aren't noticed. In the example sheet, Company E has sat at
-*KYC Docs Received* since 15 July and nothing on the sheet calls that out. Someone has
-to scan every row and calculate dates in their head.
+**3. Three people editing the same sheet with no rules.**
+Two coordinators can edit the same row and the last save wins without either of them
+knowing. Nothing stops someone from moving a vendor from Contract Sent straight to Active
+and skipping KYC, which is a compliance problem. Stages are free text too, so typos make
+filtering and counting unreliable.
 
-### Problem 2: There is no history, so you can't explain bad data
-A spreadsheet row only holds the *current* state. When a value looks wrong (a vendor
-shown as *Active* that never passed KYC, a stage that went backwards) there's no way
-to answer *who changed it, when, and what it was before*. KYC failures are the clearest
-case: Company B goes *KYC Docs Received → (rejected in Slack) → KYC Docs Received*, and
-the only trace is a free-text note that will be overwritten next time.
+## Approach
 
-### Problem 3: Three people editing one sheet, with no rules
-- **Silent overwrites:** two coordinators update the same row from slightly different
-  views of the sheet, and the last save wins without either of them noticing.
-- **No workflow rules:** anyone can type any stage, so a vendor can jump from
-  *Contract Sent* straight to *Active*, skipping KYC. That is a compliance risk, not
-  just a data-quality problem.
-- **Free-text stages:** "KYC Docs Recieved", "kyc received" and so on make filtering
-  and counting unreliable.
+I treated this as a workflow with a history, not a table you edit. Each vendor has a
+current stage, and every change to it is stored as an entry in a history log. The current
+stage is what the list shows; the history is what you look at when something seems wrong.
 
-## 2. How the solution addresses them
+The backend is Node with Express. The frontend is a single-page React app built with Vite.
+I picked these because I can move quickly with them, and the problem doesn't need anything
+heavier.
 
-| Problem | What the app does |
-|---|---|
-| Manual "Last Updated" | Every stage change writes `stageEnteredAt` automatically. **Days in stage** is calculated when it is read (`now − stageEnteredAt`) and never stored or typed, so it can't drift. Adding a note does **not** reset this timer: only real progress does. |
-| Stuck vendors go unnoticed | Vendors that have been in a non-final stage for **more than 7 days** are flagged *Stuck*. The dashboard shows a stuck count, lets you filter to stuck vendors only, and sorts them to the top by default. |
-| No history | Every stage change and note is an append-only **event** (`who`, `when`, `from`, `to`, `note`). Each vendor has a timeline, and there's a global "Recent activity" feed. The current vendor row is just the latest state; the events are the record of what happened. |
-| KYC failures leave no trace | A **"Record KYC rejection"** action (only at *KYC Docs Received*) logs a `KYC_REJECTED` event with a required reason. Per the process, the vendor **stays** at *KYC Docs Received*, but the history now shows *why* it hasn't moved, and the reason appears in the vendor list's "Latest note" column. |
-| Silent overwrites | **Optimistic locking**: each vendor has a `version`. The client sends the version it last saw. If someone else changed the vendor in the meantime, the server returns `409`, and the UI shows the latest state instead of overwriting it. |
-| No workflow rules | Stages are a fixed list (no free text). **Forward moves may only go one stage at a time**, so KYC can't be skipped. **Backward moves are allowed but need a reason** (e.g. a KYC rejection or fixing a mistake), and the reason is saved in the history. |
-| Who is doing what | Coordinators log in (mock accounts), so every change is attributed to a real person. Each vendor shows its owning coordinator, and there's a "My vendors" filter. |
+## How the app addresses the problems
 
-### Architecture (kept deliberately small)
-- **Backend:** Node + Express. Data is kept in memory and written to `data/db.json`
-  after each change (atomic write via temp file + rename). The store has a small
-  interface, so it could be replaced by Postgres without touching the routes.
-- **Frontend:** React (Vite) single-page app. It calls the API via a dev proxy.
-- **Clock:** all "now" logic goes through `clock.js`. Setting `NOW=2026-08-10T09:00:00Z`
-  fixes the date for demos and tests (re-seed with the same `NOW`, since seed dates
-  are relative to it).
-- **Tests:** `node --test` API tests cover auth, stuck calculation, history recording,
-  skip prevention, required reason for backward moves, KYC rejection, and the 409 conflict.
-  I also ran the UI end to end in headless Chrome: login, filters, KYC rejection, forward
-  and backward moves, the two-coordinator conflict, logout, and phone width.
+**Problem 1:** The app records the time whenever a vendor's stage changes and works out days
+in stage from that, so nobody types a date. Adding a note doesn't reset the counter; only an
+actual stage change does. Any vendor that has been in the same stage (other than Active) for
+more than 7 days is marked as stuck. Stuck vendors are sorted to the top, and the dashboard
+has a count and a filter for them.
 
-## 3. Assumptions
+**Problem 2:** Every stage change is saved as a separate history entry with who made it,
+when, the previous stage and the new stage. Notes are saved the same way. Each vendor has its
+own timeline, and there's a recent activity feed across all vendors. For failed KYC reviews I
+added a "Record KYC rejection" action. It keeps the vendor at KYC Docs Received but logs the
+reason, so it's clear why the vendor hasn't moved.
 
-1. **Stuck = more than 7 full days in the same non-*Active* stage.** *Active* is the
-   final stage and is never stuck. The threshold is a single constant (`STUCK_AFTER_DAYS`).
-2. **A failed KYC review is recorded as a KYC rejection event, not a stage change.** The
-   process says the vendor "remains at KYC Docs Received", so the stage doesn't move, but
-   the rejection and its reason go into the history. It does **not** reset the stuck
-   timer, because the vendor still hasn't progressed. If a vendor was marked *KYC Verified*
-   by mistake, the coordinator uses "Move back" (reason required) instead.
-3. **"Time in stage" restarts whenever the stage changes**, including backward moves:
-   the vendor is now waiting on something new.
-4. **Any coordinator can update any vendor.** The *owner* coordinator is for visibility
-   ("My vendors") and doesn't limit permissions. With three coordinators, sharing work
-   matters more than access control.
-5. **Sales creates vendors outside this app.** Vendor creation is out of scope, so seeded
-   vendors start at *Contract Sent* with an event attributed to "Sales PIC".
-6. **Compliance review and activation happen in other systems.** The app only records
-   the result; the coordinator is trusted to move the stage once it's done.
-7. **Mock auth:** three seeded coordinators (`linh`, `huy`, `mai`, password `password`)
-   with in-memory session tokens. Restarting the server logs everyone out.
-8. **Seed dates are relative to "now"**, so the demo always shows a mix of stuck and
-   healthy vendors whatever day it is run.
+**Problem 3:** Coordinators log in, so every change is tied to a person. Stages come from a
+fixed list. Vendors can only move forward one stage at a time, so KYC can't be skipped.
+Moving back is allowed (to fix a mistake, for example) but needs a reason, which goes into
+the history. To avoid silent overwrites, each vendor has a version number. If someone else
+updated the vendor after you opened it, your change is rejected and you see the latest state
+instead.
 
-## 4. What I'd do next (not built)
-- A per-stage stuck threshold (e.g. KYC review might reasonably take longer than contract signing).
-- A "waiting on" field (*vendor* / *compliance* / *us*) so stuck vendors can be routed to the right person.
-- Real auth (SSO) and a real database. The event log maps directly onto an `events` table.
-- A daily digest of stuck vendors (notifications were out of scope).
+## Assumptions
 
-## 5. Running it
-```bash
-cd backend && npm install && npm start            # API on :4000
-cd frontend && npm install && npm run dev         # UI on :5173
-# optional: freeze the clock for a demo (re-seed with the same NOW first)
-cd backend && export NOW=2026-08-10T09:00:00Z && npm run seed && npm start
-```
-Log in as `linh` / `huy` / `mai`, password `password`.
+- A vendor counts as stuck after more than 7 full days in the same stage. Active is the last
+  stage, so it's never stuck. The 7 days is a constant in the code.
+- A failed KYC review isn't a stage change. The brief says the vendor stays at KYC Docs
+  Received, so I log it as a rejection with a reason and leave the stage (and the stuck
+  timer) as it is.
+- The days-in-stage counter restarts on any stage change, including moving back.
+- Any coordinator can update any vendor. Each vendor has an owner, but that's only used for
+  the "My vendors" filter, not for permissions.
+- Sales adds vendors outside this app, since creating vendors is out of scope. Seeded vendors
+  start at Contract Sent with "Sales PIC" recorded as the person who added them.
+- Compliance review and activation happen in other systems. The app only records the
+  outcome, and the coordinator moves the stage once it's done.
+- Login uses three hardcoded accounts (linh, huy, mai, password `password`). Sessions are
+  kept in memory, so restarting the server logs everyone out.
+- Seed dates are relative to today, so the demo always shows a mix of stuck and on-track
+  vendors whenever it's run.
+
+## Technical decisions
+
+- **Days in stage is calculated, not stored.** The vendor only stores when it entered its
+  current stage. Days in stage and the stuck flag are worked out on the server each time
+  the list is loaded, so they can't get out of date.
+- **History is append-only.** Stage changes, notes and KYC rejections are all entries in
+  one log, and nothing in it is edited or deleted. A vendor's current stage could be
+  rebuilt from its history if needed.
+- **Stage rules live in one place.** The list of stages, the 7-day threshold and the
+  rules for moving between stages are all in `backend/src/stages.js`, and the server
+  checks them. The UI only offers moves that are allowed, but it doesn't enforce them.
+- **Version numbers to catch conflicting edits.** When a coordinator changes a stage, the
+  app sends the version of the vendor they were looking at. If it doesn't match, the
+  server refuses the change and the UI reloads the vendor. I chose this over locking rows
+  because conflicts should be rare with three people.
+- **One place for "now".** All date logic reads the current time from
+  `backend/src/clock.js`. Tests set it to a fixed date, and for a demo you can set it
+  with the `NOW` environment variable.
+
+## Tests
+
+The tests are in `backend/test/api.test.js`. They call the real API with an in-memory store
+and a fixed date. I focused on the business rules, because those are where a mistake
+would actually hurt:
+
+- you can't use the API without logging in;
+- days in stage and the stuck flag come out right for the seed data, and Active vendors
+  are never stuck;
+- a stage change records who, when, the previous stage and the new stage, and resets the
+  days-in-stage counter;
+- you can't skip stages, and moving back requires a reason;
+- a second coordinator working from an old view gets a conflict instead of overwriting
+  the first one's change;
+- notes and KYC rejections show up in the history but don't reset the counter, and a KYC
+  rejection leaves the vendor at KYC Docs Received.
+
+I didn't write frontend tests. The UI is mostly displaying what the API returns, so I
+checked it by hand in the browser instead.
+
+## Shortcuts and trade-offs
+
+- Data is kept in memory and saved to a JSON file after every change. That's fine for one
+  server process and a few vendors, but it won't hold up with several processes or a lot
+  of data.
+- Login is mock-only: hardcoded users, plain-text passwords, and sessions that disappear
+  when the server restarts.
+- The vendor list doesn't update on its own. If someone else changes a vendor, you see it
+  after a refresh, or when your own change is rejected because of the version check.
+- There's one stuck threshold for every stage.
+- There are no frontend tests.
+
+## What I'd improve with more time
+
+- Move to a real database (Postgres, for example). The history log would map directly to
+  an events table.
+- Set a stuck threshold per stage, since a KYC review can reasonably take longer than
+  getting a contract signed.
+- Add a "waiting on" field (vendor, compliance or us) so a stuck vendor can be chased by
+  the right person.
+- Add a few frontend tests for the stage-change form and the conflict message.
+- Replace the mock login with the company's SSO.
