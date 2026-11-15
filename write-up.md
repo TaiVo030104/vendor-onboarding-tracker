@@ -93,23 +93,41 @@ instead.
 
 ## Tests
 
-The tests are in `backend/test/api.test.js`. They call the real API with an in-memory store
-and a fixed date. I focused on the business rules, because those are where a mistake
-would actually hurt:
+Run them with `npm test` in `backend/`. There are 8 tests in `backend/test/api.test.js`.
+Each one starts the real Express app with a fresh in-memory copy of the seed data and the
+clock fixed to 10 August 2026, so the day counts are always the same.
 
-- you can't use the API without logging in;
-- days in stage and the stuck flag come out right for the seed data, and Active vendors
-  are never stuck;
-- a stage change records who, when, the previous stage and the new stage, and resets the
-  days-in-stage counter;
-- you can't skip stages, and moving back requires a reason;
-- a second coordinator working from an old view gets a conflict instead of overwriting
-  the first one's change;
-- notes and KYC rejections show up in the history but don't reset the counter, and a KYC
-  rejection leaves the vendor at KYC Docs Received.
+I tested through the HTTP API rather than testing functions one by one. That way each
+test also covers the login check, input validation and error codes, which are what the
+UI actually relies on.
 
-I didn't write frontend tests. The UI is mostly displaying what the API returns, so I
-checked it by hand in the browser instead.
+What I chose to test, and why:
+
+- **Login is required.** Every change has to be tied to a coordinator, so the API must
+  refuse requests without a valid session and reject a wrong password.
+- **Days in stage and the stuck flag.** This replaces the hand-typed "Last Updated" date,
+  which is the main problem with the spreadsheet. With the date fixed I can check exact
+  numbers: Company E is 21 days in and stuck, Company F is 2 days in and not, and Active
+  vendors are never stuck however long they've been there.
+- **A stage change records who, when, from and to.** These four fields are an explicit
+  requirement and the whole point of the history. The test also checks that the counter
+  goes back to 0, since a stuck vendor should stop being stuck once it moves.
+- **You can't skip stages.** Jumping from Contract Sent to Active would mean activating a
+  vendor that never passed KYC. That's a compliance risk, so it's worth a test of its own.
+- **Moving back needs a reason.** Going backwards is allowed for fixing mistakes, but
+  without a reason the history can't explain it later.
+- **Two coordinators editing the same vendor.** Three people work on this at the same
+  time. The test sends a change based on an old version and checks that it's rejected
+  with a 409 and doesn't overwrite the earlier change.
+- **Notes don't reset the counter.** If they did, writing "chased by phone" would hide a
+  stuck vendor, which is the same problem the spreadsheet has.
+- **KYC rejection.** This is the one branch in the workflow. The test checks that the
+  vendor stays at KYC Docs Received, the reason is logged, the counter isn't reset, and
+  the action is refused when the vendor is at a different stage.
+
+I didn't test the JSON file saving or the React components. The file store is a thin
+wrapper that I expect to replace with a database, and the UI mostly displays what the API
+returns. I checked the UI by hand in the browser instead.
 
 ## Shortcuts and trade-offs
 
